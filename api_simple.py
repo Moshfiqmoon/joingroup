@@ -589,12 +589,8 @@ def send_admin_message():
         # Save message to database as from admin
         save_message(int(user_id), 'admin', message)
         
-        # Emit socket event
-        socketio.emit('new_message', {
-            'user_id': int(user_id),
-            'sender': 'admin',
-            'message': message
-        }, room='chat_' + str(user_id))
+        # Emit message to all rooms (user room + admin notification)
+        emit_message_to_all_rooms(int(user_id), 'admin', message)
         
         return jsonify({
             'status': 'success',
@@ -636,12 +632,8 @@ def chat_message_direct(user_id):
         # Save message to database
         save_message(user_id, sender, message)
         
-        # Emit socket event
-        socketio.emit('new_message', {
-            'user_id': user_id,
-            'sender': sender,
-            'message': message
-        }, room='chat_' + str(user_id))
+        # Emit message to all rooms (user room + admin notification)
+        emit_message_to_all_rooms(user_id, sender, message)
         
         return jsonify({
             'status': 'success',
@@ -678,12 +670,8 @@ def handle_single_file_upload(user_id, file, sender):
         message_text = f"[{sender.upper()}] [{file_type.upper()}] {filename}"
         save_message(user_id, sender, message_text)
         
-        # Emit socket event
-        socketio.emit('new_message', {
-            'user_id': user_id,
-            'sender': sender,
-            'message': message_text
-        }, room='chat_' + str(user_id))
+        # Emit message to all rooms (user room + admin notification)
+        emit_message_to_all_rooms(user_id, sender, message_text)
         
         return jsonify({
             'status': 'success',
@@ -730,12 +718,8 @@ def handle_bulk_file_upload(user_id, files, sender):
         message_text = f"[{sender.upper()}] [BULK UPLOAD] {len(uploaded_files)} files uploaded"
         save_message(user_id, sender, message_text)
         
-        # Emit socket event
-        socketio.emit('new_message', {
-            'user_id': user_id,
-            'sender': sender,
-            'message': message_text
-        }, room='chat_' + str(user_id))
+        # Emit message to all rooms (user room + admin notification)
+        emit_message_to_all_rooms(user_id, sender, message_text)
         
         return jsonify({
             'status': 'success',
@@ -883,6 +867,70 @@ def manual_join():
 def on_join(data):
     room = data.get('room')
     join_room(room)
+    print(f"🔗 User joined room: {room}")
+
+@socketio.on('admin_join')
+def on_admin_join(data):
+    """Admin joins admin room to receive all messages"""
+    join_room('admin_room')
+    print("👑 Admin joined admin room")
+
+@socketio.on('user_join')
+def on_user_join(data):
+    """User joins their specific chat room"""
+    user_id = data.get('user_id')
+    room = f'chat_{user_id}'
+    join_room(room)
+    print(f"👤 User {user_id} joined room: {room}")
+
+def notify_admin_new_message(user_id, sender, message):
+    """Notify admin about new message"""
+    try:
+        # Get user info for admin notification
+        conn = sqlite3.connect(DB_NAME)
+        c = conn.cursor()
+        c.execute('SELECT full_name, username FROM users WHERE user_id = ?', (user_id,))
+        user_info = c.fetchone()
+        conn.close()
+        
+        user_name = user_info[0] if user_info else f"User {user_id}"
+        username = user_info[1] if user_info else "Unknown"
+        
+        # Emit to admin room
+        socketio.emit('admin_notification', {
+            'type': 'new_message',
+            'user_id': user_id,
+            'user_name': user_name,
+            'username': username,
+            'sender': sender,
+            'message': message,
+            'timestamp': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        }, room='admin_room')
+        
+        print(f"📢 Admin notified: {user_name} ({user_id}) sent message")
+        
+    except Exception as e:
+        print(f"❌ Error notifying admin: {e}")
+
+def emit_message_to_all_rooms(user_id, sender, message):
+    """Emit message to both user room and admin room"""
+    try:
+        # Emit to user's chat room
+        socketio.emit('new_message', {
+            'user_id': user_id,
+            'sender': sender,
+            'message': message,
+            'timestamp': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        }, room='chat_' + str(user_id))
+        
+        # If message is from user, notify admin
+        if sender == 'user':
+            notify_admin_new_message(user_id, sender, message)
+        
+        print(f"📤 Message emitted: {sender} -> {user_id}")
+        
+    except Exception as e:
+        print(f"❌ Error emitting message: {e}")
 
 @app.route('/')
 def health_check():
@@ -1387,6 +1435,96 @@ def get_user_info(user_id):
         return jsonify({
             'status': 'error',
             'message': str(e)
+        }), 500
+
+@app.route('/admin/messages')
+def admin_messages():
+    """Get all recent messages for admin dashboard"""
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        c = conn.cursor()
+        
+        # Get recent messages with user info
+        c.execute('''
+            SELECT m.user_id, m.sender, m.message, m.timestamp, 
+                   u.full_name, u.username
+            FROM messages m
+            LEFT JOIN users u ON m.user_id = u.user_id
+            ORDER BY m.timestamp DESC
+            LIMIT 100
+        ''')
+        messages = c.fetchall()
+        conn.close()
+        
+        # Format messages for admin
+        formatted_messages = []
+        for user_id, sender, message, timestamp, full_name, username in messages:
+            formatted_messages.append({
+                'user_id': user_id,
+                'sender': sender,
+                'message': message,
+                'timestamp': timestamp,
+                'user_name': full_name or f"User {user_id}",
+                'username': username or "Unknown"
+            })
+        
+        return jsonify({
+            'status': 'success',
+            'messages': formatted_messages,
+            'total_messages': len(formatted_messages)
+        })
+        
+    except Exception as e:
+        print(f"❌ Error getting admin messages: {e}")
+        return jsonify({
+            'status': 'error',
+            'message': str(e),
+            'messages': []
+        }), 500
+
+@app.route('/admin/users')
+def admin_users():
+    """Get all users for admin dashboard"""
+    try:
+        users = get_all_users()
+        
+        # Add online status and message count for each user
+        users_with_stats = []
+        for user in users:
+            user_id = user[0]
+            is_online = get_user_online_status(user_id, 5)
+            
+            # Get message count for this user
+            conn = sqlite3.connect(DB_NAME)
+            c = conn.cursor()
+            c.execute('SELECT COUNT(*) FROM messages WHERE user_id = ?', (user_id,))
+            message_count = c.fetchone()[0]
+            conn.close()
+            
+            users_with_stats.append({
+                'user_id': user[0],
+                'full_name': user[1],
+                'username': user[2],
+                'join_date': user[3],
+                'invite_link': user[4],
+                'photo_url': user[5],
+                'label': user[6],
+                'is_online': is_online,
+                'message_count': message_count
+            })
+        
+        return jsonify({
+            'status': 'success',
+            'users': users_with_stats,
+            'total_users': len(users_with_stats)
+        })
+        
+    except Exception as e:
+        print(f"❌ Error getting admin users: {e}")
+        return jsonify({
+            'status': 'error',
+            'message': str(e),
+            'users': []
         }), 500
 
 if __name__ == '__main__':
