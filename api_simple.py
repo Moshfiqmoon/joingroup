@@ -52,15 +52,23 @@ CORS(app, origins=[
     "https://admin-q2j7.onrender.com",
     "https://your-frontend-domain.onrender.com"
 ], supports_credentials=True)
-socketio = SocketIO(app, async_mode='threading', cors_allowed_origins=[
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-    "http://192.168.1.3:3000",
-    "http://192.168.1.4:3000",
-    "https://joingroup-8835.onrender.com",
-    "https://admin-q2j7.onrender.com",
-    "https://your-frontend-domain.onrender.com"
-])
+socketio = SocketIO(app, 
+    async_mode='threading', 
+    cors_allowed_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://192.168.1.3:3000",
+        "http://192.168.1.4:3000",
+        "https://joingroup-8835.onrender.com",
+        "https://admin-q2j7.onrender.com",
+        "https://your-frontend-domain.onrender.com"
+    ],
+    logger=True,
+    engineio_logger=True,
+    ping_timeout=60,
+    ping_interval=25,
+    max_http_buffer_size=1e8
+)
 
 # Get database path from environment or use temp directory
 DB_PATH = os.environ.get('DB_PATH', os.path.join(os.getcwd(), 'users.db'))
@@ -648,12 +656,8 @@ def send_message():
         # Save message to database
         save_message(int(user_id), sender, message)
         
-        # Emit socket event for real-time updates
-        socketio.emit('new_message', {
-            'user_id': int(user_id),
-            'sender': sender,
-            'message': message
-        }, room='chat_' + str(user_id))
+        # Emit message to all rooms (user room + admin notification)
+        emit_message_to_all_rooms(int(user_id), sender, message)
         
         return jsonify({
             'status': 'success',
@@ -681,12 +685,8 @@ def send_user_message():
         # Save message to database as from user
         save_message(int(user_id), 'user', message)
         
-        # Emit socket event
-        socketio.emit('new_message', {
-            'user_id': int(user_id),
-            'sender': 'user',
-            'message': message
-        }, room='chat_' + str(user_id))
+        # Emit message to all rooms (user room + admin notification)
+        emit_message_to_all_rooms(int(user_id), 'user', message)
         
         return jsonify({
             'status': 'success',
@@ -1018,23 +1018,54 @@ def manual_join():
 
 @socketio.on('join')
 def on_join(data):
-    room = data.get('room')
+    room = data.get('room') if data else 'default'
     join_room(room)
     print(f"🔗 User joined room: {room}")
 
 @socketio.on('admin_join')
-def on_admin_join(data):
+def on_admin_join(data=None):
     """Admin joins admin room to receive all messages"""
     join_room('admin_room')
     print("👑 Admin joined admin room")
+    
+    # Send confirmation to admin
+    socketio.emit('admin_connected', {
+        'message': 'Admin connected successfully',
+        'timestamp': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    }, room='admin_room')
 
 @socketio.on('user_join')
-def on_user_join(data):
+def on_user_join(data=None):
     """User joins their specific chat room"""
-    user_id = data.get('user_id')
-    room = f'chat_{user_id}'
-    join_room(room)
-    print(f"👤 User {user_id} joined room: {room}")
+    if data:
+        user_id = data.get('user_id')
+        if user_id:
+            room = f'chat_{user_id}'
+            join_room(room)
+            print(f"👤 User {user_id} joined room: {room}")
+            
+            # Also join admin room for user messages
+            join_room('admin_room')
+            print(f"👤 User {user_id} also joined admin room")
+        else:
+            print("⚠️ User join: user_id not provided")
+    else:
+        print("⚠️ User join: no data provided")
+
+@socketio.on('connect')
+def on_connect():
+    """Handle client connection"""
+    print(f"🔌 Client connected: {request.sid}")
+
+@socketio.on('disconnect')
+def on_disconnect():
+    """Handle client disconnection"""
+    print(f"🔌 Client disconnected: {request.sid}")
+
+@socketio.on('error')
+def on_error(error):
+    """Handle Socket.io errors"""
+    print(f"❌ Socket.io error: {error}")
 
 def notify_admin_new_message(user_id, sender, message):
     """Notify admin about new message"""
@@ -1060,10 +1091,20 @@ def notify_admin_new_message(user_id, sender, message):
             'timestamp': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         }, room='admin_room')
         
+        # Also emit to all admin rooms for redundancy
+        socketio.emit('new_message', {
+            'user_id': user_id,
+            'sender': sender,
+            'message': message,
+            'timestamp': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        }, room='admin_room')
+        
         print(f"📢 Admin notified: {user_name} ({user_id}) sent message")
         
     except Exception as e:
         print(f"❌ Error notifying admin: {e}")
+        import traceback
+        traceback.print_exc()
 
 def emit_message_to_all_rooms(user_id, sender, message):
     """Emit message to both user room and admin room"""
@@ -1079,11 +1120,21 @@ def emit_message_to_all_rooms(user_id, sender, message):
         # If message is from user, notify admin
         if sender == 'user':
             notify_admin_new_message(user_id, sender, message)
+        elif sender == 'admin':
+            # If message is from admin, also emit to admin room for confirmation
+            socketio.emit('admin_message_sent', {
+                'user_id': user_id,
+                'sender': sender,
+                'message': message,
+                'timestamp': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            }, room='admin_room')
         
         print(f"📤 Message emitted: {sender} -> {user_id}")
         
     except Exception as e:
         print(f"❌ Error emitting message: {e}")
+        import traceback
+        traceback.print_exc()
 
 @app.route('/')
 def health_check():
