@@ -19,6 +19,28 @@ from pyrogram import filters as pyro_filters
 from db import init_db, add_user as db_add_user
 import config
 
+# Firebase imports
+try:
+    from firebase_config import (
+        initialize_firebase, 
+        add_user_to_firebase, 
+        get_all_users_from_firebase,
+        save_message_to_firebase,
+        get_messages_for_user_from_firebase,
+        get_all_messages_from_firebase,
+        get_total_users_from_firebase,
+        get_total_messages_from_firebase,
+        get_active_users_from_firebase,
+        get_new_joins_today_from_firebase,
+        update_user_label as update_user_label_firebase
+    )
+    FIREBASE_AVAILABLE = True
+    print("✅ Firebase integration available")
+except ImportError as e:
+    FIREBASE_AVAILABLE = False
+    print(f"⚠️ Firebase integration not available: {e}")
+    print("📝 Using SQLite database only")
+
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'change_this_secret_key')
 CORS(app, origins=[
@@ -75,6 +97,19 @@ print(f"🗄️ Database initialized: {DB_NAME}")
 print(f"📁 Database file location: {os.path.abspath(DB_PATH) if DB_NAME != ':memory:' else 'In-memory'}")
 print(f"⚠️ IMPORTANT: SQLite database will reset on server restart!")
 
+# Initialize Firebase if available
+if FIREBASE_AVAILABLE:
+    try:
+        firebase_success = initialize_firebase()
+        if firebase_success:
+            print("🔥 Firebase initialized successfully")
+        else:
+            print("⚠️ Firebase initialization failed - using SQLite only")
+            FIREBASE_AVAILABLE = False
+    except Exception as e:
+        print(f"❌ Firebase initialization failed: {e}")
+        FIREBASE_AVAILABLE = False
+
 # Database backup and restore functions
 def backup_database():
     """Backup database to persistent storage"""
@@ -127,10 +162,11 @@ if not CHAT_ID or CHAT_ID == 0:
     print("⚠️ WARNING: CHAT_ID not set properly")
 
 pyro_app = Client(
-    "AutoApproveBot",
+    "AutoApproveBot_v2",  # Changed session name to avoid conflicts
     bot_token=BOT_TOKEN,
     api_id=API_ID,
-    api_hash=API_HASH
+    api_hash=API_HASH,
+    workdir="./pyrogram_sessions"  # Use separate directory for sessions
 )
 
 WELCOME_TEXT = getattr(config, "WELCOME_TEXT", "🎉 Hi {mention}, you are now a member of {title}!")
@@ -155,8 +191,15 @@ async def approve_and_dm(client: Client, join_request: ChatJoinRequest):
             invite_link = None  # Pyrogram does not provide invite_link in join request
             
             print(f"💾 Saving user to database: {user.id} - {full_name}")
+            
+            # Save to SQLite
             db_add_user(user.id, full_name, username, join_date, invite_link)
-            print(f"✅ User {user.id} saved to database successfully")
+            print(f"✅ User {user.id} saved to SQLite successfully")
+            
+            # Save to Firebase if available
+            if FIREBASE_AVAILABLE:
+                add_user_to_firebase(user.id, full_name, username, join_date, invite_link)
+                print(f"✅ User {user.id} saved to Firebase successfully")
             
             # Backup database after adding user
             backup_database()
@@ -240,13 +283,12 @@ def start_pyrogram_bot():
 
 # Test connection and start bot in background
 if test_pyrogram_connection():
-    print("🚀 Starting Pyrogram bot in background thread")
-    # Start bot in background thread
-    bot_thread = Thread(target=start_pyrogram_bot, daemon=True)
-    bot_thread.start()
-    print("✅ Pyrogram bot started in background")
+    print("🚀 Pyrogram bot connection successful")
+    print("📝 Bot will handle join requests automatically")
+    print("⚠️ Note: Bot runs in main thread to avoid signal issues")
 else:
-    print("⚠️ Pyrogram bot not started - connection failed")
+    print("⚠️ Pyrogram bot connection failed")
+    print("📝 Bot will still work for manual operations but auto-approve may not work")
 
 # --- Database helpers ---
 def get_all_users():
@@ -258,54 +300,137 @@ def get_all_users():
     return users
 
 def get_total_users():
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute('SELECT COUNT(*) FROM users')
-    total = c.fetchone()[0]
-    conn.close()
-    return total
+    """Get total users count from database (SQLite and Firebase if available)"""
+    try:
+        # Get from SQLite
+        conn = sqlite3.connect(DB_NAME)
+        c = conn.cursor()
+        c.execute('SELECT COUNT(*) FROM users')
+        sqlite_count = c.fetchone()[0]
+        conn.close()
+        
+        # Get from Firebase if available
+        if FIREBASE_AVAILABLE:
+            firebase_count = get_total_users_from_firebase()
+            # Use Firebase count if available, otherwise use SQLite
+            if firebase_count > 0:
+                return firebase_count
+        
+        return sqlite_count
+    except Exception as e:
+        print(f"❌ Error getting total users: {e}")
+        return 0
 
 def get_messages_for_user(user_id, limit=100):
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute('SELECT sender, message, timestamp FROM messages WHERE user_id = ? ORDER BY id ASC LIMIT ?', (user_id, limit))
-    messages = c.fetchall()
-    conn.close()
-    return messages
+    """Get messages for user from database (SQLite and Firebase if available)"""
+    try:
+        # Get from SQLite
+        conn = sqlite3.connect(DB_NAME)
+        c = conn.cursor()
+        c.execute('SELECT sender, message, timestamp FROM messages WHERE user_id = ? ORDER BY id ASC LIMIT ?', (user_id, limit))
+        sqlite_messages = c.fetchall()
+        conn.close()
+        
+        # Get from Firebase if available
+        if FIREBASE_AVAILABLE:
+            firebase_messages = get_messages_for_user_from_firebase(user_id, limit)
+            # Use Firebase messages if available, otherwise use SQLite
+            if firebase_messages:
+                return firebase_messages
+        
+        return sqlite_messages
+    except Exception as e:
+        print(f"❌ Error getting messages for user {user_id}: {e}")
+        return []
 
 def save_message(user_id, sender, message):
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute('INSERT INTO messages (user_id, sender, message, timestamp) VALUES (?, ?, ?, ?)',
-              (user_id, sender, message, datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
-    conn.commit()
-    conn.close()
+    """Save message to database (SQLite and Firebase if available)"""
+    try:
+        # Save to SQLite
+        conn = sqlite3.connect(DB_NAME)
+        c = conn.cursor()
+        c.execute('INSERT INTO messages (user_id, sender, message, timestamp) VALUES (?, ?, ?, ?)',
+                  (user_id, sender, message, datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+        conn.commit()
+        conn.close()
+        
+        # Save to Firebase if available
+        if FIREBASE_AVAILABLE:
+            save_message_to_firebase(user_id, sender, message)
+        
+        print(f"✅ Message saved for user {user_id}")
+        return True
+    except Exception as e:
+        print(f"❌ Error saving message: {e}")
+        return False
 
 def get_active_users(minutes=60):
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    since = (datetime.datetime.now() - datetime.timedelta(minutes=minutes)).strftime('%Y-%m-%d %H:%M:%S')
-    c.execute('SELECT COUNT(DISTINCT user_id) FROM messages WHERE timestamp >= ?', (since,))
-    count = c.fetchone()[0]
-    conn.close()
-    return count
+    """Get active users count from database (SQLite and Firebase if available)"""
+    try:
+        # Get from SQLite
+        conn = sqlite3.connect(DB_NAME)
+        c = conn.cursor()
+        since = (datetime.datetime.now() - datetime.timedelta(minutes=minutes)).strftime('%Y-%m-%d %H:%M:%S')
+        c.execute('SELECT COUNT(DISTINCT user_id) FROM messages WHERE timestamp >= ?', (since,))
+        sqlite_count = c.fetchone()[0]
+        conn.close()
+        
+        # Get from Firebase if available
+        if FIREBASE_AVAILABLE:
+            firebase_count = get_active_users_from_firebase(minutes)
+            # Use Firebase count if available, otherwise use SQLite
+            if firebase_count > 0:
+                return firebase_count
+        
+        return sqlite_count
+    except Exception as e:
+        print(f"❌ Error getting active users: {e}")
+        return 0
 
 def get_total_messages():
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute('SELECT COUNT(*) FROM messages')
-    count = c.fetchone()[0]
-    conn.close()
-    return count
+    """Get total messages count from database (SQLite and Firebase if available)"""
+    try:
+        # Get from SQLite
+        conn = sqlite3.connect(DB_NAME)
+        c = conn.cursor()
+        c.execute('SELECT COUNT(*) FROM messages')
+        sqlite_count = c.fetchone()[0]
+        conn.close()
+        
+        # Get from Firebase if available
+        if FIREBASE_AVAILABLE:
+            firebase_count = get_total_messages_from_firebase()
+            # Use Firebase count if available, otherwise use SQLite
+            if firebase_count > 0:
+                return firebase_count
+        
+        return sqlite_count
+    except Exception as e:
+        print(f"❌ Error getting total messages: {e}")
+        return 0
 
 def get_new_joins_today():
-    today = datetime.datetime.now().strftime('%Y-%m-%d')
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute('SELECT COUNT(*) FROM users WHERE join_date LIKE ?', (f'{today}%',))
-    count = c.fetchone()[0]
-    conn.close()
-    return count
+    """Get new joins today count from database (SQLite and Firebase if available)"""
+    try:
+        # Get from SQLite
+        today = datetime.datetime.now().strftime('%Y-%m-%d')
+        conn = sqlite3.connect(DB_NAME)
+        c = conn.cursor()
+        c.execute('SELECT COUNT(*) FROM users WHERE join_date LIKE ?', (f'{today}%',))
+        sqlite_count = c.fetchone()[0]
+        conn.close()
+        
+        # Get from Firebase if available
+        if FIREBASE_AVAILABLE:
+            firebase_count = get_new_joins_today_from_firebase()
+            # Use Firebase count if available, otherwise use SQLite
+            if firebase_count > 0:
+                return firebase_count
+        
+        return sqlite_count
+    except Exception as e:
+        print(f"❌ Error getting new joins today: {e}")
+        return 0
 
 def get_user_online_status(user_id, minutes=5):
     """Check if user has been active in the last N minutes"""
@@ -788,13 +913,25 @@ def send_all():
 
 @app.route('/user/<int:user_id>/label', methods=['POST'])
 def set_user_label(user_id):
-    label = request.json.get('label')
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute('UPDATE users SET label = ? WHERE user_id = ?', (label, user_id))
-    conn.commit()
-    conn.close()
-    return jsonify({'status': 'ok', 'user_id': user_id, 'label': label})
+    """Set user label in database (SQLite and Firebase if available)"""
+    try:
+        label = request.json.get('label')
+        
+        # Update SQLite
+        conn = sqlite3.connect(DB_NAME)
+        c = conn.cursor()
+        c.execute('UPDATE users SET label = ? WHERE user_id = ?', (label, user_id))
+        conn.commit()
+        conn.close()
+        
+        # Update Firebase if available
+        if FIREBASE_AVAILABLE:
+            update_user_label_firebase(user_id, label)
+        
+        return jsonify({'status': 'ok', 'user_id': user_id, 'label': label})
+    except Exception as e:
+        print(f"❌ Error setting user label: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
 
 @app.route('/add-test-user', methods=['POST'])
 def add_test_user():
@@ -842,9 +979,25 @@ def manual_join():
         # Add user to database
         db_add_user(user_id, full_name, username, join_date, None)
         
+        # Save to Firebase if available
+        if FIREBASE_AVAILABLE:
+            add_user_to_firebase(user_id, full_name, username, join_date, None)
+        
         # Send welcome message (simulated)
         welcome_message = f"🎉 Welcome {full_name}! You have been added to our group."
         save_message(user_id, 'admin', welcome_message)
+        
+        # Try to send DM via bot if available
+        try:
+            with pyro_app:
+                pyro_app.send_message(
+                    user_id,
+                    f"🎉 Hi {full_name}, you are now a member of our group!"
+                )
+                print(f"📨 DM sent to {full_name} ({user_id})")
+        except Exception as dm_error:
+            print(f"⚠️ Could not send DM: {dm_error}")
+            print("📝 User added to database but DM not sent")
         
         # Backup database after adding user
         backup_database()
@@ -1526,6 +1679,72 @@ def admin_users():
             'message': str(e),
             'users': []
         }), 500
+
+@app.route('/bot-status')
+def bot_status():
+    """Check bot status and connection"""
+    try:
+        # Test bot connection
+        with pyro_app:
+            me = pyro_app.get_me()
+            bot_info = {
+                'bot_id': me.id,
+                'bot_name': me.first_name,
+                'bot_username': me.username,
+                'is_bot': me.is_bot,
+                'status': 'connected'
+            }
+        return jsonify({
+            'status': 'success',
+            'bot_info': bot_info,
+            'chat_id': CHAT_ID,
+            'firebase_available': FIREBASE_AVAILABLE
+        })
+    except Exception as e:
+        return jsonify({
+            'status': 'error',
+            'message': str(e),
+            'firebase_available': FIREBASE_AVAILABLE
+        }), 500
+
+@app.route('/test-join-request', methods=['POST'])
+def test_join_request():
+    """Test join request handling"""
+    try:
+        data = request.json
+        user_id = data.get('user_id')
+        full_name = data.get('full_name', 'Test User')
+        username = data.get('username', 'testuser')
+        
+        if not user_id:
+            return jsonify({'error': 'user_id is required'}), 400
+            
+        join_date = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        
+        # Add user to database
+        db_add_user(user_id, full_name, username, join_date, None)
+        
+        # Save to Firebase if available
+        if FIREBASE_AVAILABLE:
+            add_user_to_firebase(user_id, full_name, username, join_date, None)
+        
+        # Send welcome message
+        welcome_message = f"🎉 Welcome {full_name}! You have been added to our group."
+        save_message(user_id, 'admin', welcome_message)
+        
+        return jsonify({
+            'status': 'success',
+            'message': f'Test join request processed for user {user_id}',
+            'user': {
+                'user_id': user_id,
+                'full_name': full_name,
+                'username': username,
+                'join_date': join_date
+            }
+        })
+    except Exception as e:
+        print(f"❌ Error in test join request: {e}")
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5001))
