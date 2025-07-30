@@ -19,18 +19,18 @@ import config
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'change_this_secret_key')
 CORS(app, origins=[
-    "http://localhost:3000",
+    "https://admin-q2j7.onrender.com",
     "http://127.0.0.1:3000",
     "http://192.168.1.3:3000",
     "https://joingroup-8835.onrender.com",
-    "https://your-frontend-domain.onrender.com"
+    "https://admin-q2j7.onrender.com"
 ], supports_credentials=True)
 socketio = SocketIO(app, async_mode='threading', cors_allowed_origins=[
-    "http://localhost:3000",
+    "https://admin-q2j7.onrender.com",
     "http://127.0.0.1:3000",
     "http://192.168.1.3:3000",
     "https://joingroup-8835.onrender.com",
-    "https://your-frontend-domain.onrender.com"
+    "https://admin-q2j7.onrender.com"
 ])
 
 # Get database path from environment or use temp directory
