@@ -1,7 +1,10 @@
 import sqlite3
 import datetime
+import os
 
-DB_NAME = 'users.db'
+# Use writable directory for database
+DB_PATH = os.environ.get('DB_PATH', '/tmp/users.db')
+DB_NAME = DB_PATH
 
 def init_db():
     conn = sqlite3.connect(DB_NAME)
