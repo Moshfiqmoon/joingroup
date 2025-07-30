@@ -103,6 +103,16 @@ API_ID = int(os.environ.get('API_ID', config.API_ID))
 API_HASH = os.environ.get('API_HASH', config.API_HASH)
 CHAT_ID = int(os.environ.get('CHAT_ID', config.CHAT_ID))
 
+# Check if required environment variables are set
+if not BOT_TOKEN or BOT_TOKEN == 'your_bot_token_here':
+    print("⚠️ WARNING: BOT_TOKEN not set properly")
+if not API_ID or API_ID == 0:
+    print("⚠️ WARNING: API_ID not set properly")
+if not API_HASH or API_HASH == 'your_api_hash_here':
+    print("⚠️ WARNING: API_HASH not set properly")
+if not CHAT_ID or CHAT_ID == 0:
+    print("⚠️ WARNING: CHAT_ID not set properly")
+
 pyro_app = Client(
     "AutoApproveBot",
     bot_token=BOT_TOKEN,
@@ -191,24 +201,36 @@ def test_pyrogram_connection():
         traceback.print_exc()
         return False
 
-# Start Pyrogram bot in main thread (simpler approach)
-if test_pyrogram_connection():
-    print("🚀 Pyrogram bot will start in main thread")
-    # Start bot in main thread to avoid async issues
+# Start Pyrogram bot in background thread
+def start_pyrogram_bot():
+    """Start Pyrogram bot in background thread"""
     try:
-        pyro_app.run()
-    except KeyboardInterrupt:
-        print("🛑 Bot stopped by user")
+        print("🔥 Starting Pyrogram bot in background...")
+        # Create new event loop for this thread
+        import asyncio
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        # For Render deployment, use idle() instead of run()
+        try:
+            pyro_app.idle()
+        except Exception as idle_error:
+            print(f"⚠️ Idle failed, trying run: {idle_error}")
+            pyro_app.run()
     except Exception as e:
-        print(f"❌ Bot error: {e}")
+        print(f"❌ Pyrogram bot error: {e}")
+        import traceback
+        traceback.print_exc()
+
+# Test connection and start bot in background
+if test_pyrogram_connection():
+    print("🚀 Starting Pyrogram bot in background thread")
+    # Start bot in background thread
+    bot_thread = Thread(target=start_pyrogram_bot, daemon=True)
+    bot_thread.start()
+    print("✅ Pyrogram bot started in background")
 else:
     print("⚠️ Pyrogram bot not started - connection failed")
-
-# Test connection before starting bot
-if test_pyrogram_connection():
-    print("🚀 Pyrogram bot will start in background")
-else:
-    print("⚠️ Pyrogram bot will not start due to connection issues")
 
 # --- Database helpers ---
 def get_all_users():
