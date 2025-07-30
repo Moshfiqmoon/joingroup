@@ -7,6 +7,7 @@ import datetime
 import traceback
 import asyncio
 from threading import Thread
+import shutil
 
 # Pyrogram imports only
 from pyrogram import Client, filters
@@ -49,6 +50,7 @@ try:
         f.write('test')
     os.remove(test_file)
     print(f"✅ Using file database: {DB_PATH}")
+    print(f"📁 Database will be stored at: {os.path.abspath(DB_PATH)}")
 except Exception as e:
     print(f"⚠️ File system not writable, using in-memory database: {e}")
     DB_NAME = ':memory:'
@@ -58,6 +60,42 @@ except Exception as e:
 init_db()
 print(f"🗄️ Database initialized: {DB_NAME}")
 print(f"📁 Database file location: {os.path.abspath(DB_PATH) if DB_NAME != ':memory:' else 'In-memory'}")
+print(f"⚠️ IMPORTANT: SQLite database will reset on server restart!")
+
+# Database backup and restore functions
+def backup_database():
+    """Backup database to persistent storage"""
+    try:
+        if os.path.exists(DB_NAME) and DB_NAME != ':memory:':
+            backup_path = f"{DB_NAME}.backup"
+            shutil.copy2(DB_NAME, backup_path)
+            print(f"✅ Database backed up to: {backup_path}")
+            return True
+    except Exception as e:
+        print(f"❌ Backup failed: {e}")
+        return False
+
+def restore_database():
+    """Restore database from backup"""
+    try:
+        if DB_NAME != ':memory:':
+            backup_path = f"{DB_NAME}.backup"
+            if os.path.exists(backup_path):
+                shutil.copy2(backup_path, DB_NAME)
+                print(f"✅ Database restored from: {backup_path}")
+                return True
+            else:
+                print(f"⚠️ No backup found at: {backup_path}")
+                return False
+    except Exception as e:
+        print(f"❌ Restore failed: {e}")
+        return False
+
+# Try to restore database on startup
+if restore_database():
+    print("🔄 Database restored from backup")
+else:
+    print("📝 Starting with fresh database")
 
 # Pyrogram Bot Setup
 BOT_TOKEN = os.environ.get('BOT_TOKEN', config.BOT_TOKEN)
@@ -96,6 +134,10 @@ async def approve_and_dm(client: Client, join_request: ChatJoinRequest):
             print(f"💾 Saving user to database: {user.id} - {full_name}")
             db_add_user(user.id, full_name, username, join_date, invite_link)
             print(f"✅ User {user.id} saved to database successfully")
+            
+            # Backup database after adding user
+            backup_database()
+            
         except Exception as db_error:
             print(f"❌ Database error saving user {user.id}: {db_error}")
             import traceback
@@ -257,7 +299,7 @@ def dashboard_users():
         users = c.fetchall()
         conn.close()
 
-        print(f"📋 Found {len(users)} users for this page")
+        print(f"�� Found {len(users)} users for this page")
 
         users_with_status = []
         for u in users:
@@ -447,6 +489,9 @@ def manual_join():
         welcome_message = f"🎉 Welcome {full_name}! You have been added to our group."
         save_message(user_id, 'admin', welcome_message)
         
+        # Backup database after adding user
+        backup_database()
+        
         return jsonify({
             'status': 'success',
             'message': f'User {user_id} joined successfully',
@@ -592,6 +637,46 @@ def database_status():
         return jsonify({
             'status': 'error',
             'message': f'Database status error: {str(e)}'
+        }), 500
+
+@app.route('/backup-db', methods=['POST'])
+def backup_database_endpoint():
+    """Manually backup database"""
+    try:
+        if backup_database():
+            return jsonify({
+                'status': 'success',
+                'message': 'Database backed up successfully'
+            })
+        else:
+            return jsonify({
+                'status': 'error',
+                'message': 'Database backup failed'
+            }), 500
+    except Exception as e:
+        return jsonify({
+            'status': 'error',
+            'message': f'Backup error: {str(e)}'
+        }), 500
+
+@app.route('/restore-db', methods=['POST'])
+def restore_database_endpoint():
+    """Manually restore database"""
+    try:
+        if restore_database():
+            return jsonify({
+                'status': 'success',
+                'message': 'Database restored successfully'
+            })
+        else:
+            return jsonify({
+                'status': 'error',
+                'message': 'Database restore failed'
+            }), 500
+    except Exception as e:
+        return jsonify({
+            'status': 'error',
+            'message': f'Restore error: {str(e)}'
         }), 500
 
 if __name__ == '__main__':
