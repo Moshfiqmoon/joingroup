@@ -401,6 +401,104 @@ def chat_messages(user_id):
         [sender, message, timestamp] for sender, message, timestamp in messages
     ])
 
+@app.route('/chat/<int:user_id>', methods=['GET'])
+def get_chat_messages(user_id):
+    """Get messages for a specific user"""
+    try:
+        messages = get_messages_for_user(user_id, limit=100)
+        
+        # Format messages for frontend
+        formatted_messages = []
+        for sender, message, timestamp in messages:
+            formatted_messages.append({
+                'sender': sender,
+                'message': message,
+                'timestamp': timestamp,
+                'user_id': user_id
+            })
+        
+        return jsonify({
+            'status': 'success',
+            'messages': formatted_messages,
+            'user_id': user_id,
+            'total_messages': len(formatted_messages)
+        })
+        
+    except Exception as e:
+        print(f"❌ Error getting messages for user {user_id}: {e}")
+        return jsonify({
+            'status': 'error',
+            'message': str(e),
+            'messages': [],
+            'user_id': user_id
+        }), 500
+
+@app.route('/messages/<int:user_id>')
+def get_user_messages(user_id):
+    """Get messages for a specific user"""
+    try:
+        messages = get_messages_for_user(user_id, limit=100)
+        
+        # Format messages for frontend
+        formatted_messages = []
+        for sender, message, timestamp in messages:
+            formatted_messages.append({
+                'sender': sender,
+                'message': message,
+                'timestamp': timestamp,
+                'user_id': user_id
+            })
+        
+        return jsonify({
+            'status': 'success',
+            'messages': formatted_messages,
+            'user_id': user_id,
+            'total_messages': len(formatted_messages)
+        })
+        
+    except Exception as e:
+        print(f"❌ Error getting messages for user {user_id}: {e}")
+        return jsonify({
+            'status': 'error',
+            'message': str(e),
+            'messages': [],
+            'user_id': user_id
+        }), 500
+
+@app.route('/messages')
+def get_all_messages():
+    """Get all messages (for admin dashboard)"""
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        c = conn.cursor()
+        c.execute('SELECT user_id, sender, message, timestamp FROM messages ORDER BY timestamp DESC LIMIT 100')
+        messages = c.fetchall()
+        conn.close()
+        
+        # Format messages for frontend
+        formatted_messages = []
+        for user_id, sender, message, timestamp in messages:
+            formatted_messages.append({
+                'user_id': user_id,
+                'sender': sender,
+                'message': message,
+                'timestamp': timestamp
+            })
+        
+        return jsonify({
+            'status': 'success',
+            'messages': formatted_messages,
+            'total_messages': len(formatted_messages)
+        })
+        
+    except Exception as e:
+        print(f"❌ Error getting all messages: {e}")
+        return jsonify({
+            'status': 'error',
+            'message': str(e),
+            'messages': []
+        }), 500
+
 @app.route('/get_channel_invite_link', methods=['GET'])
 def get_channel_invite_link():
     try:
@@ -508,6 +606,146 @@ def send_admin_message():
         
     except Exception as e:
         print(f"❌ Error sending admin message: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/chat/<int:user_id>', methods=['POST'])
+def chat_message_direct(user_id):
+    """Send message directly to chat (handles both JSON and form data)"""
+    try:
+        # Check if this is a file upload
+        if 'file' in request.files or 'files' in request.files:
+            # Handle file upload
+            if 'file' in request.files:
+                return handle_single_file_upload(user_id, request.files['file'], request.form.get('sender', 'user'))
+            elif 'files' in request.files:
+                return handle_bulk_file_upload(user_id, request.files.getlist('files'), request.form.get('sender', 'user'))
+        
+        # Try to get data from JSON first
+        if request.is_json:
+            data = request.json
+            message = data.get('message')
+            sender = data.get('sender', 'user')
+        else:
+            # Handle form data
+            message = request.form.get('message')
+            sender = request.form.get('sender', 'user')
+        
+        if not message:
+            return jsonify({'error': 'Message required'}), 400
+        
+        # Save message to database
+        save_message(user_id, sender, message)
+        
+        # Emit socket event
+        socketio.emit('new_message', {
+            'user_id': user_id,
+            'sender': sender,
+            'message': message
+        }, room='chat_' + str(user_id))
+        
+        return jsonify({
+            'status': 'success',
+            'message': 'Message sent successfully',
+            'user_id': user_id,
+            'sender': sender,
+            'message': message
+        })
+        
+    except Exception as e:
+        print(f"❌ Error in chat direct send: {e}")
+        return jsonify({'error': str(e)}), 500
+
+def handle_single_file_upload(user_id, file, sender):
+    """Handle single file upload for chat"""
+    try:
+        if file.filename == '':
+            return jsonify({'error': 'No file selected'}), 400
+        
+        # Secure filename and get file type
+        filename = secure_filename(file.filename)
+        file_type = get_file_type(filename)
+        
+        # Create user-specific folder
+        user_folder = os.path.join(UPLOAD_FOLDER, str(user_id))
+        if not os.path.exists(user_folder):
+            os.makedirs(user_folder)
+        
+        # Save file
+        file_path = os.path.join(user_folder, filename)
+        file.save(file_path)
+        
+        # Save message to database
+        message_text = f"[{sender.upper()}] [{file_type.upper()}] {filename}"
+        save_message(user_id, sender, message_text)
+        
+        # Emit socket event
+        socketio.emit('new_message', {
+            'user_id': user_id,
+            'sender': sender,
+            'message': message_text
+        }, room='chat_' + str(user_id))
+        
+        return jsonify({
+            'status': 'success',
+            'message': f'{sender.capitalize()} uploaded {file_type} successfully',
+            'filename': filename,
+            'file_type': file_type,
+            'file_path': file_path,
+            'sender': sender
+        })
+        
+    except Exception as e:
+        print(f"❌ Error uploading file: {e}")
+        return jsonify({'error': str(e)}), 500
+
+def handle_bulk_file_upload(user_id, files, sender):
+    """Handle bulk file upload for chat"""
+    try:
+        if not files or files[0].filename == '':
+            return jsonify({'error': 'No files selected'}), 400
+        
+        uploaded_files = []
+        
+        # Create user-specific folder
+        user_folder = os.path.join(UPLOAD_FOLDER, str(user_id))
+        if not os.path.exists(user_folder):
+            os.makedirs(user_folder)
+        
+        for file in files:
+            if file.filename != '':
+                filename = secure_filename(file.filename)
+                file_type = get_file_type(filename)
+                
+                # Save file
+                file_path = os.path.join(user_folder, filename)
+                file.save(file_path)
+                
+                uploaded_files.append({
+                    'filename': filename,
+                    'file_type': file_type,
+                    'file_path': file_path
+                })
+        
+        # Save bulk message to database
+        message_text = f"[{sender.upper()}] [BULK UPLOAD] {len(uploaded_files)} files uploaded"
+        save_message(user_id, sender, message_text)
+        
+        # Emit socket event
+        socketio.emit('new_message', {
+            'user_id': user_id,
+            'sender': sender,
+            'message': message_text
+        }, room='chat_' + str(user_id))
+        
+        return jsonify({
+            'status': 'success',
+            'message': f'{sender.capitalize()} uploaded {len(uploaded_files)} files successfully',
+            'files': uploaded_files,
+            'sender': sender
+        })
+        
+    except Exception as e:
+        print(f"❌ Error uploading bulk files: {e}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/chat/<int:user_id>/send', methods=['POST'])
@@ -1114,6 +1352,42 @@ def get_user_files(user_id):
     except Exception as e:
         print(f"❌ Error getting user files: {e}")
         return jsonify({'error': str(e)}), 500
+
+@app.route('/user/<int:user_id>')
+def get_user_info(user_id):
+    """Get specific user information"""
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        c = conn.cursor()
+        c.execute('SELECT user_id, full_name, username, join_date, invite_link, photo_url, label FROM users WHERE user_id = ?', (user_id,))
+        user = c.fetchone()
+        conn.close()
+        
+        if user:
+            return jsonify({
+                'status': 'success',
+                'user': {
+                    'user_id': user[0],
+                    'full_name': user[1],
+                    'username': user[2],
+                    'join_date': user[3],
+                    'invite_link': user[4],
+                    'photo_url': user[5],
+                    'label': user[6]
+                }
+            })
+        else:
+            return jsonify({
+                'status': 'error',
+                'message': 'User not found'
+            }), 404
+            
+    except Exception as e:
+        print(f"❌ Error getting user info for {user_id}: {e}")
+        return jsonify({
+            'status': 'error',
+            'message': str(e)
+        }), 500
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5001))
