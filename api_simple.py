@@ -81,6 +81,11 @@ def run_pyrogram_bot():
     """Start the Pyrogram bot in a separate thread"""
     try:
         print("🔥 Starting Pyrogram bot...")
+        # Set up event loop for this thread
+        import asyncio
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
         pyro_app.run()
         print("✅ Pyrogram bot started successfully")
     except Exception as e:
@@ -342,6 +347,6 @@ def health():
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5001))
     print(f"🚀 Starting Simplified Telegram Bot API on port {port}")
-    print(f"🌐 API URL: https://autojoin-d569.onrender.com")
+    print(f"🌐 API URL: https://joingroup-8835.onrender.com")
     print(f"🔥 Pyrogram bot will start in background")
-    socketio.run(app, port=port, debug=False, host='0.0.0.0') 
+    socketio.run(app, port=port, debug=False, host='0.0.0.0', allow_unsafe_werkzeug=True) 
