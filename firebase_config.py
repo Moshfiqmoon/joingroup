@@ -37,7 +37,15 @@ def initialize_firebase():
                         'databaseURL': f"https://{FIREBASE_CONFIG['project_id']}-default-rtdb.firebaseio.com"
                     })
                     print("✅ Firebase initialized successfully from JSON file")
-                    return True
+                    
+                    # Test connection
+                    db = get_firestore()
+                    if db:
+                        print("✅ Firebase connection test successful")
+                        return True
+                    else:
+                        print("❌ Firebase connection test failed")
+                        return False
                 except Exception as cert_error:
                     print(f"❌ Firebase certificate error: {cert_error}")
                     print("📝 Please check your Firebase credentials")
@@ -78,6 +86,7 @@ def add_user_to_firebase(user_id, full_name, username, join_date, invite_link=No
     try:
         db = get_firestore()
         if not db:
+            print("❌ Firebase database not available")
             return False
             
         user_data = {
@@ -92,11 +101,16 @@ def add_user_to_firebase(user_id, full_name, username, join_date, invite_link=No
             'updated_at': firestore.SERVER_TIMESTAMP
         }
         
-        db.collection('users').document(str(user_id)).set(user_data)
-        print(f"✅ User {user_id} added to Firebase")
+        # Use user_id as document ID for easier retrieval
+        doc_ref = db.collection('users').document(str(user_id))
+        doc_ref.set(user_data)
+        
+        print(f"✅ User {user_id} added to Firebase successfully")
         return True
     except Exception as e:
         print(f"❌ Error adding user to Firebase: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 def get_user_from_firebase(user_id):
@@ -122,15 +136,23 @@ def get_all_users_from_firebase():
             return []
             
         users = []
-        docs = db.collection('users').order_by('join_date', direction=firestore.Query.DESCENDING).stream()
+        docs = db.collection('users').stream()
         
         for doc in docs:
             user_data = doc.to_dict()
-            users.append(user_data)
+            users.append((
+                user_data.get('user_id', ''),
+                user_data.get('full_name', ''),
+                user_data.get('username', ''),
+                user_data.get('join_date', ''),
+                user_data.get('invite_link', ''),
+                user_data.get('photo_url', ''),
+                user_data.get('label', '')
+            ))
             
         return users
     except Exception as e:
-        print(f"❌ Error getting users from Firebase: {e}")
+        print(f"❌ Error getting all users from Firebase: {e}")
         return []
 
 def update_user_label(user_id, label):
@@ -144,10 +166,11 @@ def update_user_label(user_id, label):
             'label': label,
             'updated_at': firestore.SERVER_TIMESTAMP
         })
-        print(f"✅ User {user_id} label updated to {label}")
+        
+        print(f"✅ User {user_id} label updated in Firebase")
         return True
     except Exception as e:
-        print(f"❌ Error updating user label: {e}")
+        print(f"❌ Error updating user label in Firebase: {e}")
         return False
 
 # Message management functions
@@ -156,10 +179,11 @@ def save_message_to_firebase(user_id, sender, message, timestamp=None):
     try:
         db = get_firestore()
         if not db:
+            print("❌ Firebase database not available")
             return False
             
         if timestamp is None:
-            timestamp = datetime.datetime.now().isoformat()
+            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             
         message_data = {
             'user_id': user_id,
@@ -169,11 +193,14 @@ def save_message_to_firebase(user_id, sender, message, timestamp=None):
             'created_at': firestore.SERVER_TIMESTAMP
         }
         
-        db.collection('messages').add(message_data)
-        print(f"✅ Message saved to Firebase for user {user_id}")
+        # Add message to messages collection
+        doc_ref = db.collection('messages').add(message_data)
+        print(f"✅ Message saved to Firebase for user {user_id}: {message[:50]}...")
         return True
     except Exception as e:
         print(f"❌ Error saving message to Firebase: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 def get_messages_for_user_from_firebase(user_id, limit=100):
@@ -181,6 +208,7 @@ def get_messages_for_user_from_firebase(user_id, limit=100):
     try:
         db = get_firestore()
         if not db:
+            print("❌ Firebase database not available")
             return []
             
         messages = []
@@ -194,6 +222,7 @@ def get_messages_for_user_from_firebase(user_id, limit=100):
                 msg_data.get('timestamp', '')
             ))
             
+        print(f"✅ Retrieved {len(messages)} messages from Firebase for user {user_id}")
         return messages
     except Exception as e:
         print(f"❌ Error getting messages from Firebase: {e}")
@@ -232,7 +261,9 @@ def get_total_users_from_firebase():
             return 0
             
         docs = db.collection('users').stream()
-        return len(list(docs))
+        count = len(list(docs))
+        print(f"✅ Total users in Firebase: {count}")
+        return count
     except Exception as e:
         print(f"❌ Error getting total users from Firebase: {e}")
         return 0
@@ -245,7 +276,9 @@ def get_total_messages_from_firebase():
             return 0
             
         docs = db.collection('messages').stream()
-        return len(list(docs))
+        count = len(list(docs))
+        print(f"✅ Total messages in Firebase: {count}")
+        return count
     except Exception as e:
         print(f"❌ Error getting total messages from Firebase: {e}")
         return 0
@@ -258,16 +291,17 @@ def get_active_users_from_firebase(minutes=60):
             return 0
             
         since = datetime.datetime.now() - datetime.timedelta(minutes=minutes)
+        docs = db.collection('messages').where('timestamp', '>=', since.strftime('%Y-%m-%d %H:%M:%S')).stream()
         
-        # Get unique user IDs from recent messages
-        docs = db.collection('messages').where('timestamp', '>=', since.isoformat()).stream()
+        # Get unique user IDs
         user_ids = set()
-        
         for doc in docs:
             msg_data = doc.to_dict()
-            user_ids.add(msg_data.get('user_id', ''))
+            user_ids.add(msg_data.get('user_id'))
             
-        return len(user_ids)
+        count = len(user_ids)
+        print(f"✅ Active users in Firebase: {count}")
+        return count
     except Exception as e:
         print(f"❌ Error getting active users from Firebase: {e}")
         return 0
@@ -279,15 +313,16 @@ def get_new_joins_today_from_firebase():
         if not db:
             return 0
             
-        today = datetime.datetime.now().date().isoformat()
-        
+        today = datetime.datetime.now().strftime('%Y-%m-%d')
         docs = db.collection('users').where('join_date', '>=', today).stream()
-        return len(list(docs))
+        count = len(list(docs))
+        print(f"✅ New joins today in Firebase: {count}")
+        return count
     except Exception as e:
-        print(f"❌ Error getting new joins from Firebase: {e}")
+        print(f"❌ Error getting new joins today from Firebase: {e}")
         return 0
 
-# Real-time database functions (alternative to Firestore)
+# Realtime Database functions (alternative)
 def save_message_to_realtime_db(user_id, sender, message, timestamp=None):
     """Save message to Realtime Database"""
     try:
@@ -296,7 +331,7 @@ def save_message_to_realtime_db(user_id, sender, message, timestamp=None):
             return False
             
         if timestamp is None:
-            timestamp = datetime.datetime.now().isoformat()
+            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             
         message_data = {
             'user_id': user_id,
@@ -320,50 +355,90 @@ def get_messages_for_user_from_realtime_db(user_id, limit=100):
             return []
             
         messages = []
-        data = db.child('messages').order_by_child('user_id').equal_to(user_id).get()
+        data = db.child('messages').get()
         
         if data:
-            for key, value in data.items():
-                messages.append((
-                    value.get('sender', ''),
-                    value.get('message', ''),
-                    value.get('timestamp', '')
-                ))
-                
-        return messages[-limit:]  # Get last N messages
+            for key, msg_data in data.items():
+                if msg_data.get('user_id') == user_id:
+                    messages.append((
+                        msg_data.get('sender', ''),
+                        msg_data.get('message', ''),
+                        msg_data.get('timestamp', '')
+                    ))
+                    
+                    if len(messages) >= limit:
+                        break
+                        
+        return messages
     except Exception as e:
         print(f"❌ Error getting messages from Realtime DB: {e}")
         return []
 
-# Migration function from SQLite to Firebase
+# Migration function
 def migrate_sqlite_to_firebase():
     """Migrate data from SQLite to Firebase"""
     try:
         import sqlite3
         
         # Connect to SQLite
-        sqlite_conn = sqlite3.connect('users.db')
-        sqlite_cursor = sqlite_conn.cursor()
+        sqlite_db = 'users.db'
+        if not os.path.exists(sqlite_db):
+            print("❌ SQLite database not found")
+            return False
+            
+        conn = sqlite3.connect(sqlite_db)
+        c = conn.cursor()
         
         # Migrate users
-        sqlite_cursor.execute('SELECT * FROM users')
-        users = sqlite_cursor.fetchall()
+        c.execute('SELECT user_id, full_name, username, join_date, invite_link, photo_url, label FROM users')
+        users = c.fetchall()
         
         for user in users:
-            user_id, full_name, username, join_date, invite_link, photo_url, label = user
-            add_user_to_firebase(user_id, full_name, username, join_date, invite_link, photo_url, label)
+            add_user_to_firebase(
+                user[0], user[1], user[2], user[3], 
+                user[4], user[5], user[6]
+            )
         
         # Migrate messages
-        sqlite_cursor.execute('SELECT * FROM messages')
-        messages = sqlite_cursor.fetchall()
+        c.execute('SELECT user_id, sender, message, timestamp FROM messages')
+        messages = c.fetchall()
         
-        for message in messages:
-            msg_id, user_id, sender, message_text, timestamp = message
-            save_message_to_firebase(user_id, sender, message_text, timestamp)
+        for msg in messages:
+            save_message_to_firebase(msg[0], msg[1], msg[2], msg[3])
         
-        sqlite_conn.close()
-        print("✅ Migration completed successfully")
+        conn.close()
+        
+        print(f"✅ Migration completed: {len(users)} users, {len(messages)} messages")
         return True
+        
     except Exception as e:
-        print(f"❌ Migration failed: {e}")
+        print(f"❌ Migration error: {e}")
+        return False
+
+# Test Firebase connection
+def test_firebase_connection():
+    """Test Firebase connection and basic operations"""
+    try:
+        db = get_firestore()
+        if not db:
+            print("❌ Firebase connection failed")
+            return False
+            
+        # Test write operation
+        test_doc = db.collection('test').document('connection_test')
+        test_doc.set({'test': True, 'timestamp': firestore.SERVER_TIMESTAMP})
+        
+        # Test read operation
+        doc = test_doc.get()
+        if doc.exists:
+            print("✅ Firebase connection test successful")
+            # Clean up test document
+            test_doc.delete()
+            return True
+        else:
+            print("❌ Firebase read test failed")
+            return False
+            
+    except Exception as e:
+        print(f"❌ Firebase connection test failed: {e}")
         return False 
