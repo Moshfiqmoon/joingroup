@@ -55,27 +55,34 @@ WELCOME_TEXT = getattr(config, "WELCOME_TEXT", "🎉 Hi {mention}, you are now a
 
 @pyro_app.on_chat_join_request(pyro_filters.chat(CHAT_ID))
 async def approve_and_dm(client: Client, join_request: ChatJoinRequest):
-    user = join_request.from_user
-    chat = join_request.chat
-
-    await client.approve_chat_join_request(chat.id, user.id)
-    print(f"Approved: {user.first_name} ({user.id}) in {chat.title}")
-
-    # Add user to DB
-    full_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
-    username = user.username or ''
-    join_date = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    invite_link = None  # Pyrogram does not provide invite_link in join request
-    add_user(user.id, full_name, username, join_date, invite_link)
-
     try:
-        await client.send_message(
-            user.id,
-            WELCOME_TEXT.format(mention=user.mention, title=chat.title)
-        )
-        print(f"DM sent to {user.first_name} ({user.id})")
+        user = join_request.from_user
+        chat = join_request.chat
+        
+        print(f"🎯 Join request received from: {user.first_name} ({user.id}) in {chat.title}")
+
+        await client.approve_chat_join_request(chat.id, user.id)
+        print(f"✅ Approved: {user.first_name} ({user.id}) in {chat.title}")
+
+        # Add user to DB
+        full_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
+        username = user.username or ''
+        join_date = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        invite_link = None  # Pyrogram does not provide invite_link in join request
+        add_user(user.id, full_name, username, join_date, invite_link)
+
+        try:
+            await client.send_message(
+                user.id,
+                WELCOME_TEXT.format(mention=user.mention, title=chat.title)
+            )
+            print(f"📨 DM sent to {user.first_name} ({user.id})")
+        except Exception as e:
+            print(f"❌ Failed to send DM to {user.first_name} ({user.id}): {e}")
     except Exception as e:
-        print(f"Failed to send DM to {user.first_name} ({user.id}): {e}")
+        print(f"❌ Error in approve_and_dm: {e}")
+        import traceback
+        traceback.print_exc()
 
 def run_pyrogram_bot():
     """Start the Pyrogram bot in a separate thread"""
@@ -86,10 +93,16 @@ def run_pyrogram_bot():
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         
-        pyro_app.run()
+        # Run the bot with proper async context
+        loop.run_until_complete(pyro_app.start())
         print("✅ Pyrogram bot started successfully")
+        
+        # Keep the bot running
+        loop.run_forever()
     except Exception as e:
         print(f"❌ Pyrogram bot error: {e}")
+        import traceback
+        traceback.print_exc()
 
 # Start Pyrogram bot in background thread
 pyro_thread = Thread(target=run_pyrogram_bot, daemon=True)
@@ -129,11 +142,18 @@ def save_message(user_id, sender, message):
     conn.close()
 
 def add_user(user_id, full_name, username, join_date, invite_link, photo_url=None, label=None):
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute('INSERT OR IGNORE INTO users (user_id, full_name, username, join_date, invite_link, photo_url, label) VALUES (?, ?, ?, ?, ?, ?, ?)', (user_id, full_name, username, join_date, invite_link, photo_url, label))
-    conn.commit()
-    conn.close()
+    try:
+        print(f"🔍 Adding user to database: {user_id} - {full_name}")
+        conn = sqlite3.connect(DB_NAME)
+        c = conn.cursor()
+        c.execute('INSERT OR IGNORE INTO users (user_id, full_name, username, join_date, invite_link, photo_url, label) VALUES (?, ?, ?, ?, ?, ?, ?)', (user_id, full_name, username, join_date, invite_link, photo_url, label))
+        conn.commit()
+        conn.close()
+        print(f"✅ User {user_id} added to database successfully")
+    except Exception as e:
+        print(f"❌ Error adding user {user_id} to database: {e}")
+        import traceback
+        traceback.print_exc()
 
 def get_active_users(minutes=60):
     conn = sqlite3.connect(DB_NAME)
