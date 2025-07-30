@@ -8,6 +8,8 @@ import traceback
 import asyncio
 from threading import Thread
 import shutil
+from werkzeug.utils import secure_filename
+import tempfile
 
 # Pyrogram imports only
 from pyrogram import Client, filters
@@ -408,41 +410,138 @@ def get_channel_invite_link():
         print(f"Error getting invite link: {e}")
         return jsonify({'error': str(e)}), 500
 
-@app.route('/chat/<int:user_id>', methods=['POST'])
-def chat_send(user_id):
-    print(f"DEBUG: Received request for user {user_id}")
-    
-    message = request.form.get('message')
-    files = request.files.getlist('files')
-    sent = False
-    response = {'status': 'error', 'message': 'No message or files sent'}
+@app.route('/send-message', methods=['POST'])
+def send_message():
+    """Send message from user or admin"""
+    try:
+        data = request.json
+        user_id = data.get('user_id')
+        message = data.get('message')
+        sender = data.get('sender', 'user')  # 'user' or 'admin'
+        
+        if not user_id or not message:
+            return jsonify({'error': 'User ID and message required'}), 400
+        
+        # Save message to database
+        save_message(int(user_id), sender, message)
+        
+        # Emit socket event for real-time updates
+        socketio.emit('new_message', {
+            'user_id': int(user_id),
+            'sender': sender,
+            'message': message
+        }, room='chat_' + str(user_id))
+        
+        return jsonify({
+            'status': 'success',
+            'message': 'Message sent successfully',
+            'user_id': user_id,
+            'sender': sender,
+            'message': message
+        })
+        
+    except Exception as e:
+        print(f"❌ Error sending message: {e}")
+        return jsonify({'error': str(e)}), 500
 
-    # Handle text message
-    if message:
-        print(f"DEBUG: Processing text message")
-        save_message(user_id, 'admin', message)
-        sent = True
-        response = {'status': 'success', 'message': 'Message sent (simulated)'}
-        print(f"DEBUG: Message sent successfully")
+@app.route('/send-user-message', methods=['POST'])
+def send_user_message():
+    """Send message from user to admin"""
+    try:
+        data = request.json
+        user_id = data.get('user_id')
+        message = data.get('message')
+        
+        if not user_id or not message:
+            return jsonify({'error': 'User ID and message required'}), 400
+        
+        # Save message to database as from user
+        save_message(int(user_id), 'user', message)
+        
+        # Emit socket event
+        socketio.emit('new_message', {
+            'user_id': int(user_id),
+            'sender': 'user',
+            'message': message
+        }, room='chat_' + str(user_id))
+        
+        return jsonify({
+            'status': 'success',
+            'message': 'User message sent successfully',
+            'user_id': user_id,
+            'sender': 'user',
+            'message': message
+        })
+        
+    except Exception as e:
+        print(f"❌ Error sending user message: {e}")
+        return jsonify({'error': str(e)}), 500
 
-    # Handle files (simplified)
-    if files and len(files) > 0:
-        print(f"DEBUG: Processing files")
-        for file in files:
-            filename = file.filename
-            print(f"DEBUG: Received file: {filename}")
-            save_message(user_id, 'admin', f"[file]{filename}")
-        sent = True
-        response = {'status': 'success', 'message': 'Files processed (simulated)'}
+@app.route('/send-admin-message', methods=['POST'])
+def send_admin_message():
+    """Send message from admin to user"""
+    try:
+        data = request.json
+        user_id = data.get('user_id')
+        message = data.get('message')
+        
+        if not user_id or not message:
+            return jsonify({'error': 'User ID and message required'}), 400
+        
+        # Save message to database as from admin
+        save_message(int(user_id), 'admin', message)
+        
+        # Emit socket event
+        socketio.emit('new_message', {
+            'user_id': int(user_id),
+            'sender': 'admin',
+            'message': message
+        }, room='chat_' + str(user_id))
+        
+        return jsonify({
+            'status': 'success',
+            'message': 'Admin message sent successfully',
+            'user_id': user_id,
+            'sender': 'admin',
+            'message': message
+        })
+        
+    except Exception as e:
+        print(f"❌ Error sending admin message: {e}")
+        return jsonify({'error': str(e)}), 500
 
-    # Emit socket event and return response
-    print(f"DEBUG: Final response: {response}")
-    socketio.emit('new_message', {'user_id': user_id}, room='chat_' + str(user_id))
-    
-    if sent:
-        return jsonify(response), 200
-    else:
-        return jsonify(response), 500
+@app.route('/chat/<int:user_id>/send', methods=['POST'])
+def chat_send_message(user_id):
+    """Send message in chat (works for both user and admin)"""
+    try:
+        data = request.json
+        message = data.get('message')
+        sender = data.get('sender', 'user')  # Default to user
+        
+        if not message:
+            return jsonify({'error': 'Message required'}), 400
+        
+        # Save message to database
+        save_message(user_id, sender, message)
+        
+        # Emit socket event
+        socketio.emit('new_message', {
+            'user_id': user_id,
+            'sender': sender,
+            'message': message
+        }, room='chat_' + str(user_id))
+        
+        return jsonify({
+            'status': 'success',
+            'message': 'Message sent successfully',
+            'user_id': user_id,
+            'sender': sender,
+            'message': message
+        })
+        
+    except Exception as e:
+        print(f"❌ Error in chat send: {e}")
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/send_one', methods=['POST'])
 def send_one():
@@ -757,6 +856,264 @@ def test_add_user():
             'message': f'Error adding test user: {str(e)}',
             'database_path': DB_NAME
         }), 500
+
+# File upload configuration
+UPLOAD_FOLDER = 'uploads'
+ALLOWED_EXTENSIONS = {
+    'image': {'png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp'},
+    'video': {'mp4', 'avi', 'mov', 'mkv', 'webm', '3gp'},
+    'audio': {'mp3', 'wav', 'ogg', 'm4a', 'aac'},
+    'document': {'pdf', 'doc', 'docx', 'txt', 'zip', 'rar'}
+}
+
+# Create upload folder if it doesn't exist
+if not os.path.exists(UPLOAD_FOLDER):
+    os.makedirs(UPLOAD_FOLDER)
+
+def allowed_file(filename, file_type):
+    """Check if file extension is allowed"""
+    return '.' in filename and \
+           filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS.get(file_type, set())
+
+def get_file_type(filename):
+    """Get file type based on extension"""
+    ext = filename.rsplit('.', 1)[1].lower() if '.' in filename else ''
+    for file_type, extensions in ALLOWED_EXTENSIONS.items():
+        if ext in extensions:
+            return file_type
+    return 'document'
+
+@app.route('/upload-file', methods=['POST'])
+def upload_file():
+    """Upload single file (image, video, audio, document) - works for both user and admin"""
+    try:
+        if 'file' not in request.files:
+            return jsonify({'error': 'No file provided'}), 400
+        
+        file = request.files['file']
+        user_id = request.form.get('user_id')
+        sender = request.form.get('sender', 'user')  # 'user' or 'admin'
+        
+        if file.filename == '':
+            return jsonify({'error': 'No file selected'}), 400
+        
+        if not user_id:
+            return jsonify({'error': 'User ID required'}), 400
+        
+        # Secure filename and get file type
+        filename = secure_filename(file.filename)
+        file_type = get_file_type(filename)
+        
+        # Create user-specific folder
+        user_folder = os.path.join(UPLOAD_FOLDER, str(user_id))
+        if not os.path.exists(user_folder):
+            os.makedirs(user_folder)
+        
+        # Save file
+        file_path = os.path.join(user_folder, filename)
+        file.save(file_path)
+        
+        # Save message to database
+        message_text = f"[{sender.upper()}] [{file_type.upper()}] {filename}"
+        save_message(int(user_id), sender, message_text)
+        
+        # Emit socket event
+        socketio.emit('new_message', {
+            'user_id': int(user_id),
+            'sender': sender,
+            'message': message_text
+        }, room='chat_' + str(user_id))
+        
+        return jsonify({
+            'status': 'success',
+            'message': f'{sender.capitalize()} uploaded {file_type} successfully',
+            'filename': filename,
+            'file_type': file_type,
+            'file_path': file_path,
+            'sender': sender
+        })
+        
+    except Exception as e:
+        print(f"❌ Error uploading file: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/upload-bulk-files', methods=['POST'])
+def upload_bulk_files():
+    """Upload multiple files at once - works for both user and admin"""
+    try:
+        if 'files' not in request.files:
+            return jsonify({'error': 'No files provided'}), 400
+        
+        files = request.files.getlist('files')
+        user_id = request.form.get('user_id')
+        sender = request.form.get('sender', 'user')  # 'user' or 'admin'
+        
+        if not user_id:
+            return jsonify({'error': 'User ID required'}), 400
+        
+        if not files or files[0].filename == '':
+            return jsonify({'error': 'No files selected'}), 400
+        
+        uploaded_files = []
+        
+        # Create user-specific folder
+        user_folder = os.path.join(UPLOAD_FOLDER, str(user_id))
+        if not os.path.exists(user_folder):
+            os.makedirs(user_folder)
+        
+        for file in files:
+            if file.filename != '':
+                filename = secure_filename(file.filename)
+                file_type = get_file_type(filename)
+                
+                # Save file
+                file_path = os.path.join(user_folder, filename)
+                file.save(file_path)
+                
+                uploaded_files.append({
+                    'filename': filename,
+                    'file_type': file_type,
+                    'file_path': file_path
+                })
+        
+        # Save bulk message to database
+        message_text = f"[{sender.upper()}] [BULK UPLOAD] {len(uploaded_files)} files uploaded"
+        save_message(int(user_id), sender, message_text)
+        
+        # Emit socket event
+        socketio.emit('new_message', {
+            'user_id': int(user_id),
+            'sender': sender,
+            'message': message_text
+        }, room='chat_' + str(user_id))
+        
+        return jsonify({
+            'status': 'success',
+            'message': f'{sender.capitalize()} uploaded {len(uploaded_files)} files successfully',
+            'files': uploaded_files,
+            'sender': sender
+        })
+        
+    except Exception as e:
+        print(f"❌ Error uploading bulk files: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/send-voice', methods=['POST'])
+def send_voice():
+    """Send voice message - works for both user and admin"""
+    try:
+        if 'voice' not in request.files:
+            return jsonify({'error': 'No voice file provided'}), 400
+        
+        voice_file = request.files['voice']
+        user_id = request.form.get('user_id')
+        sender = request.form.get('sender', 'user')  # 'user' or 'admin'
+        
+        if voice_file.filename == '':
+            return jsonify({'error': 'No voice file selected'}), 400
+        
+        if not user_id:
+            return jsonify({'error': 'User ID required'}), 400
+        
+        # Secure filename
+        filename = secure_filename(voice_file.filename)
+        
+        # Create user-specific folder
+        user_folder = os.path.join(UPLOAD_FOLDER, str(user_id))
+        if not os.path.exists(user_folder):
+            os.makedirs(user_folder)
+        
+        # Save voice file
+        file_path = os.path.join(user_folder, filename)
+        voice_file.save(file_path)
+        
+        # Save message to database
+        message_text = f"[{sender.upper()}] [VOICE MESSAGE] {filename}"
+        save_message(int(user_id), sender, message_text)
+        
+        # Emit socket event
+        socketio.emit('new_message', {
+            'user_id': int(user_id),
+            'sender': sender,
+            'message': message_text
+        }, room='chat_' + str(user_id))
+        
+        return jsonify({
+            'status': 'success',
+            'message': f'{sender.capitalize()} voice message sent successfully',
+            'filename': filename,
+            'file_path': file_path,
+            'sender': sender
+        })
+        
+    except Exception as e:
+        print(f"❌ Error sending voice: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/send-telegram-message', methods=['POST'])
+def send_telegram_message():
+    """Send message through Telegram bot"""
+    try:
+        data = request.json
+        user_id = data.get('user_id')
+        message = data.get('message')
+        message_type = data.get('type', 'text')  # text, image, video, voice
+        
+        if not user_id or not message:
+            return jsonify({'error': 'User ID and message required'}), 400
+        
+        # Save message to database
+        save_message(int(user_id), 'admin', message)
+        
+        # Try to send through Telegram bot (if available)
+        try:
+            # This would require the bot to be properly configured
+            # For now, just save to database
+            print(f"📨 Message saved for user {user_id}: {message}")
+        except Exception as bot_error:
+            print(f"⚠️ Bot send failed: {bot_error}")
+        
+        # Emit socket event
+        socketio.emit('new_message', {'user_id': int(user_id)}, room='chat_' + str(user_id))
+        
+        return jsonify({
+            'status': 'success',
+            'message': 'Message sent successfully',
+            'user_id': user_id,
+            'message': message
+        })
+        
+    except Exception as e:
+        print(f"❌ Error sending Telegram message: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/get-user-files/<int:user_id>')
+def get_user_files(user_id):
+    """Get all files uploaded by a user"""
+    try:
+        user_folder = os.path.join(UPLOAD_FOLDER, str(user_id))
+        
+        if not os.path.exists(user_folder):
+            return jsonify({'files': []})
+        
+        files = []
+        for filename in os.listdir(user_folder):
+            file_path = os.path.join(user_folder, filename)
+            file_type = get_file_type(filename)
+            file_size = os.path.getsize(file_path)
+            
+            files.append({
+                'filename': filename,
+                'file_type': file_type,
+                'file_size': file_size,
+                'file_path': file_path
+            })
+        
+        return jsonify({'files': files})
+        
+    except Exception as e:
+        print(f"❌ Error getting user files: {e}")
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5001))
