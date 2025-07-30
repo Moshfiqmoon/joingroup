@@ -17,11 +17,11 @@ def main():
         port = int(os.environ.get('PORT', 5001))
         
         print(f"🚀 Starting Simplified Telegram Bot API on port {port}")
-        print(f"🌐 API URL: https://autojoin-d569.onrender.com")
+        print(f"🌐 API URL: https://joingroup-8835.onrender.com")
         print(f"📋 Note: This is a simplified version without bot features")
         
-        # Start Flask-SocketIO
-        socketio.run(app, port=port, debug=False, host='0.0.0.0')
+        # Start Flask-SocketIO with production settings
+        socketio.run(app, port=port, debug=False, host='0.0.0.0', allow_unsafe_werkzeug=True)
         
     except Exception as e:
         print(f"❌ Startup error: {e}")
