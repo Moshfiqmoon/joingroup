@@ -22,18 +22,32 @@ CORS(app, origins=[
     "http://localhost:3000",
     "http://127.0.0.1:3000",
     "http://192.168.1.3:3000",
-    "https://autojoin-d569.onrender.com",
+    "https://joingroup-8835.onrender.com",
     "https://your-frontend-domain.onrender.com"
 ], supports_credentials=True)
 socketio = SocketIO(app, async_mode='threading', cors_allowed_origins=[
     "http://localhost:3000",
     "http://127.0.0.1:3000",
     "http://192.168.1.3:3000",
-    "https://autojoin-d569.onrender.com",
+    "https://joingroup-8835.onrender.com",
     "https://your-frontend-domain.onrender.com"
 ])
 
-DB_NAME = 'users.db'
+# Get database path from environment or use temp directory
+DB_PATH = os.environ.get('DB_PATH', '/tmp/users.db')
+DB_NAME = DB_PATH
+
+# Fallback to in-memory database if file system is not writable
+try:
+    # Test if we can write to the directory
+    test_file = f"{DB_PATH}.test"
+    with open(test_file, 'w') as f:
+        f.write('test')
+    os.remove(test_file)
+    print(f"✅ Using file database: {DB_PATH}")
+except Exception as e:
+    print(f"⚠️ File system not writable, using in-memory database: {e}")
+    DB_NAME = ':memory:'
 
 # Ensure DB tables exist
 init_db()
