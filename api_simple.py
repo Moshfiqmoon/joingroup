@@ -42,6 +42,17 @@ socketio = SocketIO(app, async_mode='threading', cors_allowed_origins=[
 DB_PATH = os.environ.get('DB_PATH', os.path.join(os.getcwd(), 'users.db'))
 DB_NAME = DB_PATH
 
+# For Render deployment, use a more reliable path
+if os.environ.get('RENDER', False) or os.environ.get('RENDER_EXTERNAL_URL', False):
+    DB_PATH = '/opt/render/project/src/users.db'
+    DB_NAME = DB_PATH
+    print(f"🚀 Render deployment detected, using path: {DB_PATH}")
+elif os.environ.get('PORT', False):
+    # If PORT is set (like on Render), use Render path
+    DB_PATH = '/opt/render/project/src/users.db'
+    DB_NAME = DB_PATH
+    print(f"🚀 Cloud deployment detected (PORT set), using path: {DB_PATH}")
+
 # Fallback to in-memory database if file system is not writable
 try:
     # Test if we can write to the directory
@@ -211,12 +222,15 @@ def start_pyrogram_bot():
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         
-        # For Render deployment, use idle() instead of run()
+        # For Render deployment, use start() instead of run() or idle() to avoid signal issues
         try:
-            pyro_app.idle()
-        except Exception as idle_error:
-            print(f"⚠️ Idle failed, trying run: {idle_error}")
-            pyro_app.run()
+            # Use start() which doesn't require signal handling
+            pyro_app.start()
+            print("✅ Pyrogram bot started successfully with start()")
+        except Exception as start_error:
+            print(f"⚠️ Start failed: {start_error}")
+            # Don't try idle() or run() as they cause signal issues
+            print("⚠️ Skipping bot startup due to signal issues")
     except Exception as e:
         print(f"❌ Pyrogram bot error: {e}")
         import traceback
@@ -699,6 +713,49 @@ def restore_database_endpoint():
         return jsonify({
             'status': 'error',
             'message': f'Restore error: {str(e)}'
+        }), 500
+
+@app.route('/test-add-user', methods=['POST'])
+def test_add_user():
+    """Add a test user and verify database functionality"""
+    try:
+        data = request.json
+        user_id = data.get('user_id', 999999)
+        full_name = data.get('full_name', 'Test User')
+        username = data.get('username', 'testuser')
+        
+        join_date = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        
+        # Add user to database
+        db_add_user(user_id, full_name, username, join_date, None)
+        
+        # Verify user was added
+        conn = sqlite3.connect(DB_NAME)
+        c = conn.cursor()
+        c.execute('SELECT COUNT(*) FROM users')
+        total_users = c.fetchone()[0]
+        c.execute('SELECT * FROM users WHERE user_id = ?', (user_id,))
+        user = c.fetchone()
+        conn.close()
+        
+        return jsonify({
+            'status': 'success',
+            'message': f'Test user {user_id} added successfully',
+            'total_users': total_users,
+            'user': {
+                'user_id': user[0] if user else user_id,
+                'full_name': user[1] if user else full_name,
+                'username': user[2] if user else username,
+                'join_date': user[3] if user else join_date
+            },
+            'database_path': DB_NAME
+        })
+    except Exception as e:
+        print(f"❌ Error in test-add-user: {e}")
+        return jsonify({
+            'status': 'error',
+            'message': f'Error adding test user: {str(e)}',
+            'database_path': DB_NAME
         }), 500
 
 if __name__ == '__main__':
