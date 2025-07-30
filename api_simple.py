@@ -206,8 +206,13 @@ async def approve_and_dm(client: Client, join_request: ChatJoinRequest):
             
             # Save to Firebase if available
             if FIREBASE_AVAILABLE:
-                add_user_to_firebase(user.id, full_name, username, join_date, invite_link)
-                print(f"✅ User {user.id} saved to Firebase successfully")
+                firebase_success = add_user_to_firebase(user.id, full_name, username, join_date, invite_link)
+                if firebase_success:
+                    print(f"✅ User {user.id} saved to Firebase successfully")
+                else:
+                    print(f"⚠️ User {user.id} failed to save to Firebase")
+            else:
+                print(f"⚠️ Firebase not available, user {user.id} saved to SQLite only")
             
             # Backup database after adding user
             backup_database()
@@ -332,23 +337,29 @@ def get_total_users():
 def get_messages_for_user(user_id, limit=100):
     """Get messages for user from database (SQLite and Firebase if available)"""
     try:
-        # Get from SQLite
+        # Get from Firebase if available (prioritize Firebase)
+        if FIREBASE_AVAILABLE:
+            firebase_messages = get_messages_for_user_from_firebase(user_id, limit)
+            if firebase_messages:
+                print(f"✅ Retrieved {len(firebase_messages)} messages from Firebase for user {user_id}")
+                return firebase_messages
+            else:
+                print(f"⚠️ No messages found in Firebase for user {user_id}, trying SQLite")
+        
+        # Fallback to SQLite
         conn = sqlite3.connect(DB_NAME)
         c = conn.cursor()
         c.execute('SELECT sender, message, timestamp FROM messages WHERE user_id = ? ORDER BY id ASC LIMIT ?', (user_id, limit))
         sqlite_messages = c.fetchall()
         conn.close()
         
-        # Get from Firebase if available
-        if FIREBASE_AVAILABLE:
-            firebase_messages = get_messages_for_user_from_firebase(user_id, limit)
-            # Use Firebase messages if available, otherwise use SQLite
-            if firebase_messages:
-                return firebase_messages
-        
+        print(f"✅ Retrieved {len(sqlite_messages)} messages from SQLite for user {user_id}")
         return sqlite_messages
+        
     except Exception as e:
         print(f"❌ Error getting messages for user {user_id}: {e}")
+        import traceback
+        traceback.print_exc()
         return []
 
 def save_message(user_id, sender, message):
@@ -361,15 +372,23 @@ def save_message(user_id, sender, message):
                   (user_id, sender, message, datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
         conn.commit()
         conn.close()
+        print(f"✅ Message saved to SQLite for user {user_id}")
         
         # Save to Firebase if available
         if FIREBASE_AVAILABLE:
-            save_message_to_firebase(user_id, sender, message)
+            firebase_success = save_message_to_firebase(user_id, sender, message)
+            if firebase_success:
+                print(f"✅ Message saved to Firebase for user {user_id}")
+            else:
+                print(f"⚠️ Message failed to save to Firebase for user {user_id}")
+        else:
+            print(f"⚠️ Firebase not available, message saved to SQLite only for user {user_id}")
         
-        print(f"✅ Message saved for user {user_id}")
         return True
     except Exception as e:
         print(f"❌ Error saving message: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 def get_active_users(minutes=60):
@@ -1796,6 +1815,89 @@ def test_join_request():
     except Exception as e:
         print(f"❌ Error in test join request: {e}")
         return jsonify({'error': str(e)}), 500
+
+@app.route('/test-firebase', methods=['POST'])
+def test_firebase():
+    """Test Firebase functionality"""
+    try:
+        from firebase_config import test_firebase_connection
+        
+        # Test Firebase connection
+        connection_success = test_firebase_connection()
+        
+        if not connection_success:
+            return jsonify({
+                'status': 'error',
+                'message': 'Firebase connection failed',
+                'firebase_available': FIREBASE_AVAILABLE
+            }), 500
+        
+        # Test user addition
+        test_user_id = 999999
+        test_name = "Firebase Test User"
+        test_username = "firebase_test"
+        test_date = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        
+        user_success = add_user_to_firebase(test_user_id, test_name, test_username, test_date, None)
+        
+        # Test message addition
+        message_success = save_message_to_firebase(test_user_id, 'admin', 'Firebase test message')
+        
+        # Test message retrieval
+        messages = get_messages_for_user_from_firebase(test_user_id, 10)
+        
+        return jsonify({
+            'status': 'success',
+            'message': 'Firebase test completed',
+            'firebase_available': FIREBASE_AVAILABLE,
+            'connection_success': connection_success,
+            'user_addition_success': user_success,
+            'message_addition_success': message_success,
+            'messages_retrieved': len(messages),
+            'test_user_id': test_user_id
+        })
+        
+    except Exception as e:
+        print(f"❌ Firebase test error: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            'status': 'error',
+            'message': f'Firebase test failed: {str(e)}',
+            'firebase_available': FIREBASE_AVAILABLE
+        }), 500
+
+@app.route('/migrate-to-firebase', methods=['POST'])
+def migrate_to_firebase():
+    """Migrate SQLite data to Firebase"""
+    try:
+        from firebase_config import migrate_sqlite_to_firebase
+        
+        if not FIREBASE_AVAILABLE:
+            return jsonify({
+                'status': 'error',
+                'message': 'Firebase not available'
+            }), 500
+        
+        success = migrate_sqlite_to_firebase()
+        
+        if success:
+            return jsonify({
+                'status': 'success',
+                'message': 'Migration completed successfully'
+            })
+        else:
+            return jsonify({
+                'status': 'error',
+                'message': 'Migration failed'
+            }), 500
+            
+    except Exception as e:
+        print(f"❌ Migration error: {e}")
+        return jsonify({
+            'status': 'error',
+            'message': f'Migration error: {str(e)}'
+        }), 500
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5001))
