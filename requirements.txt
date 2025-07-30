@@ -1,0 +1,8 @@
+Flask==2.3.3
+Flask-CORS==4.0.0
+Flask-SocketIO==5.3.6
+Pyrogram==2.0.106
+TgCrypto==1.2.5
+python-socketio==5.9.0
+eventlet==0.33.3
+gunicorn==21.2.0 
