@@ -40,6 +40,25 @@ except ImportError as e:
     FIREBASE_AVAILABLE = False
     print(f"⚠️ Firebase integration not available: {e}")
     print("📝 Using SQLite database only")
+    # Create dummy functions for Firebase operations
+    def add_user_to_firebase(*args, **kwargs):
+        print("⚠️ Firebase not available - user not saved to Firebase")
+        return False
+    def save_message_to_firebase(*args, **kwargs):
+        print("⚠️ Firebase not available - message not saved to Firebase")
+        return False
+    def get_messages_for_user_from_firebase(*args, **kwargs):
+        return []
+    def get_total_users_from_firebase(*args, **kwargs):
+        return 0
+    def get_total_messages_from_firebase(*args, **kwargs):
+        return 0
+    def get_active_users_from_firebase(*args, **kwargs):
+        return 0
+    def get_new_joins_today_from_firebase(*args, **kwargs):
+        return 0
+    def update_user_label_firebase(*args, **kwargs):
+        return False
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'change_this_secret_key')
@@ -55,19 +74,21 @@ CORS(app, origins=[
 socketio = SocketIO(app, 
     async_mode='threading', 
     cors_allowed_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "http://192.168.1.3:3000",
-        "http://192.168.1.4:3000",
-        "https://joingroup-8835.onrender.com",
-        "https://admin-q2j7.onrender.com",
-        "https://your-frontend-domain.onrender.com"
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://192.168.1.3:3000",
+    "http://192.168.1.4:3000",
+    "https://joingroup-8835.onrender.com",
+    "https://admin-q2j7.onrender.com",
+    "https://your-frontend-domain.onrender.com"
     ],
-    logger=True,
-    engineio_logger=True,
+    logger=False,  # Disable logger in production
+    engineio_logger=False,  # Disable engineio logger in production
     ping_timeout=60,
     ping_interval=25,
-    max_http_buffer_size=1e8
+    max_http_buffer_size=1e8,
+    allow_upgrades=True,
+    transports=['websocket', 'polling']
 )
 
 # Get database path from environment or use temp directory
@@ -117,6 +138,8 @@ if FIREBASE_AVAILABLE:
     except Exception as e:
         print(f"❌ Firebase initialization failed: {e}")
         FIREBASE_AVAILABLE = False
+else:
+    print("📝 Firebase not available - using SQLite database only")
 
 # Database backup and restore functions
 def backup_database():
@@ -169,12 +192,22 @@ if not API_HASH or API_HASH == 'your_api_hash_here':
 if not CHAT_ID or CHAT_ID == 0:
     print("⚠️ WARNING: CHAT_ID not set properly")
 
+# Create session directory for production
+SESSION_DIR = "./pyrogram_sessions"
+if not os.path.exists(SESSION_DIR):
+    try:
+        os.makedirs(SESSION_DIR)
+        print(f"✅ Created session directory: {SESSION_DIR}")
+    except Exception as e:
+        print(f"⚠️ Could not create session directory: {e}")
+        SESSION_DIR = "/tmp/pyrogram_sessions"  # Fallback to temp directory
+
 pyro_app = Client(
     "AutoApproveBot_v2",  # Changed session name to avoid conflicts
     bot_token=BOT_TOKEN,
     api_id=API_ID,
     api_hash=API_HASH,
-    workdir="./pyrogram_sessions"  # Use separate directory for sessions
+    workdir=SESSION_DIR  # Use separate directory for sessions
 )
 
 WELCOME_TEXT = getattr(config, "WELCOME_TEXT", "🎉 Hi {mention}, you are now a member of {title}!")
@@ -1820,6 +1853,13 @@ def test_join_request():
 def test_firebase():
     """Test Firebase functionality"""
     try:
+        if not FIREBASE_AVAILABLE:
+            return jsonify({
+                'status': 'error',
+                'message': 'Firebase not available',
+                'firebase_available': False
+            }), 500
+        
         from firebase_config import test_firebase_connection
         
         # Test Firebase connection
@@ -1904,4 +1944,14 @@ if __name__ == '__main__':
     print(f"🚀 Starting Simplified Telegram Bot API on port {port}")
     print(f"🌐 API URL: https://joingroup-8835.onrender.com")
     print(f"🔥 Pyrogram bot will start in background")
-    socketio.run(app, port=port, debug=False, host='0.0.0.0', allow_unsafe_werkzeug=True) 
+    
+    # Use production-ready settings
+    socketio.run(
+        app, 
+        port=port, 
+        debug=False, 
+        host='0.0.0.0', 
+        allow_unsafe_werkzeug=True,
+        use_reloader=False,  # Disable reloader in production
+        threaded=True
+    ) 
